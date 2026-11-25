@@ -1,3 +1,4 @@
+
 pipeline {
     agent any
 
@@ -54,6 +55,8 @@ pipeline {
                         powershell -NoProfile -ExecutionPolicy Bypass -Command "$c = docker ps -aq --filter 'name=^/qlphongtro-app$'; if ($c) { docker rm -f qlphongtro-app; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE } }"
 
                         docker run -d --name qlphongtro-app -p 8082:8080 -e SPRING_PROFILES_ACTIVE=docker -e DB_USERNAME -e DB_PASSWORD qlphongtro:1.0
+
+                        if errorlevel 1 exit /b 1
                     '''
                 }
             }
@@ -61,9 +64,50 @@ pipeline {
 
         stage('Verify Deployment') {
             steps {
+                echo 'Waiting for Spring Boot application to start...'
+
                 bat '''
-                    powershell -NoProfile -ExecutionPolicy Bypass -Command "$success = $false; for ($i = 0; $i -lt 30; $i++) { try { $r = Invoke-WebRequest -Uri 'http://localhost:8082' -UseBasicParsing -TimeoutSec 3; if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) { $success = $true; break } } catch { Start-Sleep -Seconds 2 } }; if (-not $success) { docker logs qlphongtro-app; exit 1 }"
+                    powershell -NoProfile -ExecutionPolicy Bypass -Command "
+                        $success = $false;
+
+                        for ($i = 0; $i -lt 120; $i++) {
+
+                            $running = docker inspect -f '{{.State.Running}}' qlphongtro-app 2>$null;
+
+                            if ($running -ne 'true') {
+                                Write-Host 'Container has stopped!';
+                                docker logs qlphongtro-app;
+                                exit 1;
+                            }
+
+                            try {
+                                $r = Invoke-WebRequest `
+                                    -Uri 'http://localhost:8082' `
+                                    -UseBasicParsing `
+                                    -TimeoutSec 5;
+
+                                if ($r.StatusCode -ge 200 -and $r.StatusCode -lt 400) {
+                                    $success = $true;
+                                    break;
+                                }
+                            }
+                            catch {
+                                Write-Host 'Application is starting...'
+                            }
+
+                            Start-Sleep -Seconds 3;
+                        }
+
+                        if (-not $success) {
+                            Write-Host 'Deployment verification failed!';
+                            docker logs qlphongtro-app;
+                            exit 1;
+                        }
+
+                        Write-Host 'Application is running successfully!';
+                    "
                 '''
+
                 echo 'QLPhongTro has been deployed successfully!'
             }
         }
